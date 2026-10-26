@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pac Man Field — Mini</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:#090b18;color:#f4f4ff;font:16px system-ui,Segoe UI,sans-serif;display:grid;place-items:center;min-height:100vh;padding:16px}
+  main{width:min(100%,650px);text-align:center}
+  h1{margin:0 0 4px;color:#ffe45c;letter-spacing:1px}
+  p{margin:4px 0 12px;color:#c7c9df}
+  .hud{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#171a30;border:1px solid #303653;border-radius:12px;padding:10px 14px;margin-bottom:10px}
+  canvas{display:block;width:100%;height:auto;background:#050711;border:3px solid #4d5aff;border-radius:10px;image-rendering:pixelated}
+  button{margin:12px 4px 0;padding:10px 18px;border:0;border-radius:10px;background:#ffe45c;color:#151515;font-weight:800;cursor:pointer}
+  .help{font-size:13px;color:#aeb3d4;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+  <h1>PAC MAN FIELD</h1>
+  <p>A tiny maze-chase prototype — collect every dot and dodge the ghosts!</p>
+  <div class="hud"><span>Score: <b id="score">0</b></span><span>Dots left: <b id="left">0</b></span><span>Time: <b id="time">3:00</b></span><span id="status">Ready</span></div>
+  <canvas id="game" width="560" height="560" aria-label="Maze game"></canvas>
+  <div><button id="start">Start / Restart</button></div>
+  <div class="help">Move with ← ↑ → ↓ or WASD. Press Start / Restart to begin. Collect the small dots; avoid the red ghosts.</div>
+</main>
+<script>
+(() => {
+  const canvas=document.getElementById('game'), ctx=canvas.getContext('2d');
+  const scoreEl=document.getElementById('score'), leftEl=document.getElementById('left'), timeEl=document.getElementById('time'), statusEl=document.getElementById('status');
+  const tile=28, cols=20, rows=20;
+  // # = wall, . = dot, space = empty
+  const layout=[
+  "####################",
+  "#........##........#",
+  "#.####...##...####.#",
+  "#.#  #........#  #.#",
+  "#.#  #.####...#  #.#",
+  "#......#  #........#",
+  "###.##.#  #.##.##.###",
+  "  #....#  #....#   ",
+  "###.##.####.##.### #",
+  "#................. #",
+  "#.##.###.##.###.##.#",
+  "#....#........#....#",
+  "####.#.##  ##.#.####",
+  "#......#    #......#",
+  "#.####.# ## #.####.#",
+  "#........##........#",
+  "#.##.##......##.##..#",
+  "#....#...##...#.....#",
+  "#........##........#",
+  "####################"
+  ];
+  // Normalize every row to exactly 20 columns; blanks outside the maze become walls.
+  const map=layout.map(row=>(row+'####################').slice(0,cols).split('').map(ch=>ch==='#'?'#':ch==='.'?'.':' '));
+  let player, ghosts, score, dots, running=false, end=false, remaining=180, last=0, accumulator=0, timerId;
+  const directions={ArrowLeft:[-1,0],a:[-1,0],ArrowRight:[1,0],d:[1,0],ArrowUp:[0,-1],w:[0,-1],ArrowDown:[0,1],s:[0,1]};
+  function reset(){
+    for(let y=0;y<rows;y++)for(let x=0;x<cols;x++)if(map[y][x]!== '#')map[y][x]='.';
+    player={x:1,y:1,dir:[0,0],next:[0,0]};
+    ghosts=[{x:18,y:1,dir:[-1,0],color:'#ff5268'},{x:18,y:18,dir:[0,-1],color:'#52d9ff'},{x:1,y:18,dir:[1,0],color:'#d77bff'}];
+    // Clear a small spawn pocket
+    [[1,1],[18,1],[18,18],[1,18]].forEach(([x,y])=>map[y][x]=' ');
+    score=0; dots=0; for(const row of map)for(const c of row)if(c==='.')dots++;
+    remaining=180; running=false;end=false;accumulator=0;
+    updateHud(); draw();statusEl.textContent='Ready';
+  }
+  function updateHud(){scoreEl.textContent=score;leftEl.textContent=dots;timeEl.textContent=`${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`;}
+  function wall(x,y){return x<0||x>=cols||y<0||y>=rows||map[y][x]==='#';}
+  function move(entity,dir){if(!dir[0]&&!dir[1])return;const nx=entity.x+dir[0],ny=entity.y+dir[1];if(!wall(nx,ny)){entity.x=nx;entity.y=ny;}}
+  function chooseGhostDir(g){
+    const opts=[[1,0],[-1,0],[0,1],[0,-1]].filter(d=>!wall(g.x+d[0],g.y+d[1]));
+    if(!opts.length)return [0,0];
+    // Sometimes chase; sometimes wander, keeping movement simple and predictable.
+    if(Math.random()<0.68)opts.sort((a,b)=>{
+      const da=Math.abs(g.x+a[0]-player.x)+Math.abs(g.y+a[1]-player.y);
+      const db=Math.abs(g.x+b[0]-player.x)+Math.abs(g.y+b[1]-player.y);
+      return da-db;
+    });
+    return opts[Math.floor(Math.random()*Math.min(opts.length,Math.random()<0.68?1:opts.length))] || opts[0];
+  }
+  function step(){
+    if(!running||end)return;
+    if(!wall(player.x+player.next[0],player.y+player.next[1]))player.dir=player.next;
+    move(player,player.dir);
+    if(map[player.y][player.x]==='.'){map[player.y][player.x]=' ';score+=10;dots--;if(dots<=0)finish('Maze cleared! You win!');}
+    for(const g of ghosts){
+      if(Math.random()<0.8 || wall(g.x+g.dir[0],g.y+g.dir[1]))g.dir=chooseGhostDir(g);
+      move(g,g.dir);
+      if(g.x===player.x&&g.y===player.y)finish('Caught by a ghost! Try again.');
+    }
+    updateHud();draw();
+  }
+  function finish(msg){running=false;end=true;statusEl.textContent=msg;draw();}
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+      const px=x*tile,py=y*tile;
+      if(map[y][x]==='#'){ctx.fillStyle='#2633a5';ctx.fillRect(px+1,py+1,tile-2,tile-2);ctx.strokeStyle='#6672ff';ctx.strokeRect(px+4,py+4,tile-8,tile-8);}
+      else if(map[y][x]==='.'){ctx.fillStyle='#fff0a3';ctx.beginPath();ctx.arc(px+tile/2,py+tile/2,3,0,Math.PI*2);ctx.fill();}
+    }
+    // Player
+    const cx=player.x*tile+tile/2,cy=player.y*tile+tile/2;
+    ctx.fillStyle='#ffe45c';ctx.beginPath();ctx.arc(cx,cy,10,0.25*Math.PI,1.75*Math.PI);ctx.lineTo(cx,cy);ctx.fill();
+    // Ghosts
+    for(const g of ghosts){
+      const gx=g.x*tile+tile/2,gy=g.y*tile+tile/2;
+      ctx.fillStyle=g.color;ctx.beginPath();ctx.arc(gx,gy,10,Math.PI,0);ctx.lineTo(gx+10,gy+9);ctx.lineTo(gx+4,gy+5);ctx.lineTo(gx,gy+9);ctx.lineTo(gx-5,gy+5);ctx.lineTo(gx-10,gy+9);ctx.closePath();ctx.fill();
+      ctx.fillStyle='white';ctx.beginPath();ctx.arc(gx-4,gy-2,3,0,Math.PI*2);ctx.arc(gx+4,gy-2,3,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#172044';ctx.beginPath();ctx.arc(gx-3,gy-2,1.5,0,Math.PI*2);ctx.arc(gx+5,gy-2,1.5,0,Math.PI*2);ctx.fill();
+    }
+    if(!running&&end){ctx.fillStyle='rgba(4,5,18,.78)';ctx.fillRect(40,220,480,110);ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='bold 23px system-ui';ctx.fillText(statusEl.textContent,280,265);ctx.font='16px system-ui';ctx.fillText('Press Start / Restart to play again',280,300);}
+  }
+  document.addEventListener('keydown',e=>{
+    if(directions[e.key]){e.preventDefault();if(player)player.next=directions[e.key];}
+  });
+  document.getElementById('start').addEventListener('click',()=>{
+    reset();running=true;statusEl.textContent='Playing';last=performance.now();
+  });
+  function loop(now){
+    const dt=Math.min((now-last)/1000,0.1);last=now;
+    if(running&&!end){
+      accumulator+=dt;
+      while(accumulator>=0.18){step();accumulator-=0.18;}
+      remaining-=dt;
+      if(remaining<=0){remaining=0;updateHud();finish('Time up! Try again.');}
+      else updateHud();
+    }
+    requestAnimationFrame(loop);
+  }
+  reset();requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
